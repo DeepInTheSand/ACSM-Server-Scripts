@@ -1,6 +1,4 @@
-ac.debug("!version", "dtmDRS v1.0")
-ac.debug("URL", "https://github.com/tetematete/OSRLUASNIPPETS/tree/main")
-ac.debug("Credit", "Script by tetematete | OSR")
+ac.debug("!version", "dtmDRS v1.1")
 
 --[[
   Server config example (paste into CSP Extra Options):
@@ -27,12 +25,13 @@ local active             = false
 local sessionActivations = 0
 local lapActivations     = 0
 local gapToAhead         = 999.0
-local prevDrs            = false
-local drsGranted         = false  -- true only when we authorised the current DRS hold
+local drsOn              = false  -- our internal DRS state
 
-local hudPos      = ac.storage { pos = vec2(20, 200) }
-local flagDragging  = false
-local flagStartPos  = vec2(0, 0)
+local hudPos       = ac.storage { pos = vec2(20, 200) }
+local flagDragging = false
+local flagStartPos = vec2(0, 0)
+
+local drsButton = ac.ControlButton("DRS")
 
 -- ── helpers ──────────────────────────────────────────────────────────────────
 
@@ -76,6 +75,23 @@ local function deniedReason()
     return string.format("Session limit reached (%d / %d uses)", sessionActivations, maxPerSession)
 end
 
+-- ── DRS button ───────────────────────────────────────────────────────────────
+
+drsButton:onPressed(function()
+    if not scriptReady or not active then return end
+    if canActivate() then
+        drsOn              = true
+        lapActivations     = lapActivations     + 1
+        sessionActivations = sessionActivations + 1
+    else
+        ac.setMessage("DRS Unavailable", deniedReason(), nil, 3)
+    end
+end)
+
+drsButton:onReleased(function()
+    drsOn = false
+end)
+
 -- ── lifecycle ─────────────────────────────────────────────────────────────────
 
 ac.onOnlineWelcome(function(message, config)
@@ -92,47 +108,20 @@ end)
 ac.onSessionStart(function()
     sessionActivations = 0
     lapActivations     = 0
-    drsGranted         = false
+    drsOn              = false
     active = checkActive()
 end)
 
 ac.onLapCompleted(0, function()
     lapActivations = 0
-    drsGranted     = false
+    drsOn          = false
 end)
 
 -- ── update ────────────────────────────────────────────────────────────────────
 
 function script.update(dt)
     if not scriptReady or not active then return end
-
     updateGap()
-
-    local drsNow = car.drs
-
-    if drsNow and not prevDrs then
-        -- Rising edge: driver just activated DRS
-        if canActivate() then
-            drsGranted         = true
-            lapActivations     = lapActivations     + 1
-            sessionActivations = sessionActivations + 1
-        else
-            drsGranted = false
-            ac.setDRS(false)
-            ac.setMessage("DRS Unavailable", deniedReason(), nil, 3)
-        end
-    end
-
-    -- Enforce block every frame while DRS is on but was not authorised
-    if drsNow and not drsGranted then
-        ac.setDRS(false)
-    end
-
-    if not drsNow then
-        drsGranted = false
-    end
-
-    prevDrs = drsNow
 end
 
 -- ── UI ───────────────────────────────────────────────────────────────────────
@@ -140,7 +129,6 @@ end
 function script.drawUI()
     if not scriptReady or not active then return end
 
-    local drsOn   = car.drs
     local allowed = canActivate()
 
     local statusColor, statusText
@@ -184,8 +172,8 @@ function script.drawUI()
 
         if ui.windowHovered(ui.HoveredFlags.RectOnly) then
             if ui.isMouseDragging(ui.MouseButton.Left) and not flagDragging then
-                flagStartPos  = hudPos.pos
-                flagDragging  = true
+                flagStartPos = hudPos.pos
+                flagDragging = true
             end
         end
         if flagDragging and ui.mouseDragDelta(ui.MouseButton.Left) ~= vec2(0, 0) then
