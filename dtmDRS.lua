@@ -1,4 +1,4 @@
-ac.debug("!version", "dtmDRS v1.2")
+ac.debug("!version", "dtmDRS v1.3")
 
 --[[
   Server config example (paste into CSP Extra Options):
@@ -25,7 +25,7 @@ local active             = false
 local sessionActivations = 0
 local lapActivations     = 0
 local gapToAhead         = 999.0
-local drsOn              = false  -- our internal DRS state
+local drsOn              = false
 
 local hudPos       = ac.storage { pos = vec2(20, 200) }
 local flagDragging = false
@@ -46,17 +46,25 @@ end
 
 local function updateGap()
     gapToAhead = 999.0
-    for i = 0, sim.carsCount - 1 do
-        local entry = ac.getCar.leaderboard(i)
-        if entry and entry.index == 0 then
-            if i > 0 then
-                local ahead = ac.getCar.leaderboard(i - 1)
-                if ahead then
-                    gapToAhead = math.abs(ac.getGapBetweenCars(0, ahead.index))
-                end
+    -- Use splinePosition + lapCount as total race progress to find the car
+    -- directly ahead in race order, without relying on leaderboard iteration.
+    local myProgress = car.splinePosition + car.lapCount
+    local minDiff    = 999.0
+    local aheadIndex = -1
+
+    for i = 1, sim.carsCount - 1 do
+        local other = ac.getCar(i)
+        if other then
+            local diff = (other.splinePosition + other.lapCount) - myProgress
+            if diff > 0 and diff < minDiff then
+                minDiff    = diff
+                aheadIndex = i
             end
-            break
         end
+    end
+
+    if aheadIndex >= 0 then
+        gapToAhead = math.abs(ac.getGapBetweenCars(0, aheadIndex))
     end
 end
 
@@ -75,21 +83,19 @@ local function deniedReason()
     return string.format("Session limit reached (%d / %d uses)", sessionActivations, maxPerSession)
 end
 
--- ── DRS button ───────────────────────────────────────────────────────────────
+-- ── DRS button (toggle) ───────────────────────────────────────────────────────
 
 drsButton:onPressed(function()
     if not scriptReady or not active then return end
-    if canActivate() then
+    if drsOn then
+        drsOn = false
+    elseif canActivate() then
         drsOn              = true
         lapActivations     = lapActivations     + 1
         sessionActivations = sessionActivations + 1
     else
         ac.setMessage("DRS Unavailable", deniedReason(), nil, 3)
     end
-end)
-
-drsButton:onReleased(function()
-    drsOn = false
 end)
 
 -- ── lifecycle ─────────────────────────────────────────────────────────────────
@@ -126,7 +132,7 @@ end
 
 function script.frameBegin(dt)
     if not scriptReady or not active then return end
-    ac.setDRS(drsOn)  -- enforce our authorised DRS state every frame
+    ac.setDRS(drsOn)
 end
 
 -- ── UI ───────────────────────────────────────────────────────────────────────
@@ -134,9 +140,8 @@ end
 function script.drawUI()
     if not scriptReady or not active then return end
 
-    local W, H = 215, 100
+    local W, H = 220, 110
 
-    -- Clamp stored position to keep window on-screen
     hudPos.pos = vec2(
         math.clamp(hudPos.pos.x, 0, sim.windowWidth  - W),
         math.clamp(hudPos.pos.y, 0, sim.windowHeight - H)
@@ -176,12 +181,10 @@ function script.drawUI()
         ui.popStyleColor()
         ui.popFont()
 
-        ui.setCursor(vec2(8, 30))
-        ui.pushFont(ui.Font.Small)
+        ui.setCursor(vec2(8, 32))
         ui.text(string.format("Gap:     %s  (< %.1f s)", gapStr, activationGap))
         ui.text(string.format("Lap:     %s", lapStr))
         ui.text(string.format("Session: %s", sesStr))
-        ui.popFont()
 
         if ui.windowHovered(ui.HoveredFlags.RectOnly) then
             if ui.isMouseDragging(ui.MouseButton.Left) and not flagDragging then
