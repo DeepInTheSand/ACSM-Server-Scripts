@@ -37,7 +37,7 @@ local drsButton = ac.ControlButton("DRS")
 -- ── helpers ──────────────────────────────────────────────────────────────────
 
 local function updateSessionState()
-    local s = sim.raceSessionType
+    local s = ac.getSession(sim.currentSessionIndex).type
     isPractice = (s == ac.SessionType.Practice)
     active = (s == ac.SessionType.Practice and activePQR[1] == 1)
           or (s == ac.SessionType.Qualify  and activePQR[2] == 1)
