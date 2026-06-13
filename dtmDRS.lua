@@ -55,8 +55,9 @@ local function activateForSession(sType)
     end
 end
 
--- Find the car directly ahead using racePosition (lapCount is broken for other
--- cars in online races — always 0 for car index > 0).
+-- Gap via spline positions (avoids ac.getGapBetweenCars which internally uses
+-- lapCount — always 0 for other cars online, breaking results after lap 1).
+-- Formula mirrors CMRT leaderboard: splineDiff * trackLengthM / speed.
 local function updateGap()
     gapToAhead = 999.0
     local myPos = car.racePosition
@@ -65,10 +66,10 @@ local function updateGap()
     for i = 1, sim.carsCount - 1 do
         local other = ac.getCar(i)
         if other ~= nil and other.racePosition == myPos - 1 then
-            local gap = ac.getGapBetweenCars(0, i)
-            if gap > 0 then
-                gapToAhead = gap
-            end
+            local delta = other.splinePosition - car.splinePosition
+            if delta < 0 then delta = delta + 1.0 end  -- car ahead just crossed the line
+            local speed = math.max(car.speedMs, 14.0)  -- floor at 65 km/h avoids huge gaps when slow
+            gapToAhead = delta * sim.trackLengthM / speed
             break
         end
     end
