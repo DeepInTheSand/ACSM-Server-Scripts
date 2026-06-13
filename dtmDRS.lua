@@ -69,7 +69,9 @@ local function updateGap()
 end
 
 local function canActivate()
-    return gapToAhead <= activationGap
+    local s = ac.getSession(sim.currentSessionIndex).type
+    local gapOk = s == ac.SessionType.Practice or gapToAhead <= activationGap
+    return gapOk
         and (maxPerLap == 0     or lapActivations     < maxPerLap)
         and (maxPerSession == 0 or sessionActivations < maxPerSession)
 end
