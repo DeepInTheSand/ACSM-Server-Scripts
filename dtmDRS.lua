@@ -1,4 +1,4 @@
-ac.debug("!version", "dtmDRS v1.1")
+ac.debug("!version", "dtmDRS v1.2")
 
 --[[
   Server config example (paste into CSP Extra Options):
@@ -124,10 +124,23 @@ function script.update(dt)
     updateGap()
 end
 
+function script.frameBegin(dt)
+    if not scriptReady or not active then return end
+    ac.setDRS(drsOn)  -- enforce our authorised DRS state every frame
+end
+
 -- ── UI ───────────────────────────────────────────────────────────────────────
 
 function script.drawUI()
     if not scriptReady or not active then return end
+
+    local W, H = 215, 100
+
+    -- Clamp stored position to keep window on-screen
+    hudPos.pos = vec2(
+        math.clamp(hudPos.pos.x, 0, sim.windowWidth  - W),
+        math.clamp(hudPos.pos.y, 0, sim.windowHeight - H)
+    )
 
     local allowed = canActivate()
 
@@ -153,7 +166,7 @@ function script.drawUI()
         and "-- s"
         or  string.format("%.2f s", gapToAhead)
 
-    ui.transparentWindow("DTM_DRS_HUD", hudPos.pos, vec2(215, 100), true, true, function()
+    ui.transparentWindow("DTM_DRS_HUD", hudPos.pos, vec2(W, H), true, true, function()
         ui.drawRectFilled(vec2(0, 0), ui.windowSize(), rgbm(0, 0, 0, 0.65), 5)
 
         ui.setCursor(vec2(8, 6))
@@ -172,7 +185,7 @@ function script.drawUI()
 
         if ui.windowHovered(ui.HoveredFlags.RectOnly) then
             if ui.isMouseDragging(ui.MouseButton.Left) and not flagDragging then
-                flagStartPos = hudPos.pos
+                flagStartPos = ui.windowPos()
                 flagDragging = true
             end
         end
