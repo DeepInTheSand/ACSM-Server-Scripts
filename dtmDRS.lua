@@ -1,4 +1,4 @@
-ac.debug("!version", "dtmDRS v1.4")
+ac.debug("!version", "dtmDRS v1.5")
 
 --[[
   Server config example (paste into CSP Extra Options):
@@ -13,6 +13,11 @@ ac.debug("!version", "dtmDRS v1.4")
 local sim = ac.getSim()
 local car = ac.getCar(0)
 
+-- AC session type integer constants — avoids nil-enum comparisons
+local AC_PRACTICE = 0
+local AC_QUALIFY  = 1
+local AC_RACE     = 2
+
 -- Config defaults (overwritten on welcome)
 local maxPerSession = 20
 local maxPerLap     = 2
@@ -22,7 +27,6 @@ local activePQR     = { 0, 0, 1 }
 -- Runtime state
 local scriptReady        = false
 local active             = false
-local isPractice         = false
 local sessionActivations = 0
 local lapActivations     = 0
 local gapToAhead         = 999.0
@@ -36,18 +40,26 @@ local drsButton = ac.ControlButton("DRS")
 
 -- ── helpers ──────────────────────────────────────────────────────────────────
 
-local function updateSessionState()
-    local s = ac.getSession(sim.currentSessionIndex).type
-    isPractice = (s == ac.SessionType.Practice)
-    active = (s == ac.SessionType.Practice and activePQR[1] == 1)
-          or (s == ac.SessionType.Qualify  and activePQR[2] == 1)
-          or (s == ac.SessionType.Race     and activePQR[3] == 1)
+local function sessionTypeNow()
+    return ac.getSession(ac.getSim().currentSessionIndex).type
+end
+
+local function isPracticeNow()
+    return sessionTypeNow() == AC_PRACTICE
+end
+
+local function activateForSession(s)
+    active = (s == AC_PRACTICE and activePQR[1] == 1)
+          or (s == AC_QUALIFY  and activePQR[2] == 1)
+          or (s == AC_RACE     and activePQR[3] == 1)
+    -- Unknown session type: default to active so the script doesn't silently vanish
+    if s ~= AC_PRACTICE and s ~= AC_QUALIFY and s ~= AC_RACE then
+        active = true
+    end
 end
 
 local function updateGap()
     gapToAhead = 999.0
-    -- ac.getGapBetweenCars(0, i) is positive when car i is ahead of the player.
-    -- Find the smallest positive gap = the car directly in front.
     for i = 1, sim.carsCount - 1 do
         local gap = ac.getGapBetweenCars(0, i)
         if gap > 0 and gap < gapToAhead then
@@ -57,16 +69,17 @@ local function updateGap()
 end
 
 local function canActivate()
-    -- Practice: no gap restriction, no session limit — only lap limit applies
-    local gapOk     = isPractice or gapToAhead <= activationGap
-    local sessionOk = isPractice or (maxPerSession == 0 or sessionActivations < maxPerSession)
+    local practice  = isPracticeNow()
+    local gapOk     = practice or gapToAhead <= activationGap
+    local sessionOk = practice or (maxPerSession == 0 or sessionActivations < maxPerSession)
     return gapOk
         and (maxPerLap == 0 or lapActivations < maxPerLap)
         and sessionOk
 end
 
 local function deniedReason()
-    if not isPractice and gapToAhead > activationGap then
+    local practice = isPracticeNow()
+    if not practice and gapToAhead > activationGap then
         return string.format("Gap %.2fs | need < %.1fs to car ahead", gapToAhead, activationGap)
     elseif maxPerLap > 0 and lapActivations >= maxPerLap then
         return string.format("Lap limit reached (%d / %d uses)", lapActivations, maxPerLap)
@@ -98,19 +111,19 @@ ac.onOnlineWelcome(function(message, config)
     activePQR[1]  = config:get("DTM_DRS", "ACTIVE_PQR", 0, 1)
     activePQR[2]  = config:get("DTM_DRS", "ACTIVE_PQR", 0, 2)
     activePQR[3]  = config:get("DTM_DRS", "ACTIVE_PQR", 1, 3)
-    updateSessionState()
+    activateForSession(sessionTypeNow())
     scriptReady = true
 end)
 
-ac.onSessionStart(function()
+ac.onSessionStart(function(sessionIndex, restarted)
     sessionActivations = 0
     lapActivations     = 0
     drsOn              = false
-    updateSessionState()
+    -- Use the sessionIndex parameter directly — more reliable than sim.currentSessionIndex
+    activateForSession(ac.getSession(sessionIndex).type)
 end)
 
 ac.onLapCompleted(0, function()
-    -- Reset per-lap count but leave DRS active if it was open
     lapActivations = 0
 end)
 
@@ -134,8 +147,9 @@ end
 function script.drawUI()
     if not scriptReady or not active then return end
 
+    local practice = isPracticeNow()
     local W = 220
-    local H = isPractice and 64 or 98
+    local H = practice and 64 or 98
 
     hudPos.pos = vec2(
         math.clamp(hudPos.pos.x, 0, sim.windowWidth  - W),
@@ -158,11 +172,9 @@ function script.drawUI()
     local dimPip  = rgbm(0.20, 0.20, 0.20, 1)
 
     ui.transparentWindow("DTM_DRS_HUD", hudPos.pos, vec2(W, H), true, true, function()
-        -- Background and left accent strip
         ui.drawRectFilled(vec2(0, 0), vec2(W, H), rgbm(0, 0, 0, 0.76))
         ui.drawRectFilled(vec2(0, 0), vec2(4, H), accentCol)
 
-        -- Status label
         ui.setCursor(vec2(12, 6))
         ui.pushFont(ui.Font.Title)
         ui.pushStyleColor(ui.StyleColor.Text, accentCol)
@@ -170,10 +182,9 @@ function script.drawUI()
         ui.popStyleColor()
         ui.popFont()
 
-        -- Separator
         ui.drawRectFilled(vec2(12, 28), vec2(W - 8, 29), rgbm(1, 1, 1, 0.10))
 
-        -- Lap activation pips + count
+        -- Lap pips + count
         local pipR    = 4
         local pipStep = 14
         local pipX    = 14
@@ -197,8 +208,7 @@ function script.drawUI()
         end
         ui.popStyleColor()
 
-        if not isPractice then
-            -- Separator
+        if not practice then
             ui.drawRectFilled(vec2(12, 60), vec2(W - 8, 61), rgbm(1, 1, 1, 0.10))
 
             local gapStr = gapToAhead > 99
@@ -216,7 +226,6 @@ function script.drawUI()
             ui.popStyleColor()
         end
 
-        -- Drag handling
         if ui.windowHovered(ui.HoveredFlags.RectOnly) then
             if ui.isMouseDragging(ui.MouseButton.Left) and not flagDragging then
                 flagStartPos = ui.windowPos()
