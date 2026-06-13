@@ -119,6 +119,9 @@ end)
 function script.update(dt)
     if not scriptReady or not active then return end
     updateGap()
+    if drsOn and car.brake > 0 then
+        drsOn = false
+    end
 end
 
 function script.frameBegin(dt)
@@ -203,7 +206,7 @@ function script.drawUI()
                 or  string.format("%.2f s", gapToAhead)
             local sesStr = maxPerSession == 0
                 and "--"
-                or  string.format("%d / %d", sessionActivations, maxPerSession)
+                or  string.format("%d left", maxPerSession - sessionActivations)
 
             ui.pushStyleColor(ui.StyleColor.Text, dimText)
             ui.setCursor(vec2(14, 65))
