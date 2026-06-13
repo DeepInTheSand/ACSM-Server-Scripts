@@ -1,4 +1,4 @@
-ac.debug("!version", "dtmDRS v1.5")
+ac.debug("!version", "dtmDRS v1.6")
 
 --[[
   Server config example (paste into CSP Extra Options):
@@ -7,22 +7,17 @@ ac.debug("!version", "dtmDRS v1.5")
   MAX_PER_SESSION=20     ; Total DRS activations allowed per session  (0 = unlimited, practice ignores this)
   MAX_PER_LAP=2          ; DRS activations allowed per lap            (0 = unlimited)
   ACTIVATION_GAP=1.0     ; Gap in seconds to car ahead required to activate DRS (practice ignores this)
-  ACTIVE_PQR=0;0;1       ; Enable in Practice, Qualifying, Race (1=yes, 0=no)
+  ACTIVE_PQR=1;0;1       ; Enable in Practice, Qualifying, Race (1=yes, 0=no)
 ]]
 
 local sim = ac.getSim()
 local car = ac.getCar(0)
 
--- AC session type integer constants — avoids nil-enum comparisons
-local AC_PRACTICE = 0
-local AC_QUALIFY  = 1
-local AC_RACE     = 2
-
 -- Config defaults (overwritten on welcome)
 local maxPerSession = 20
 local maxPerLap     = 2
 local activationGap = 1.0
-local activePQR     = { 0, 0, 1 }
+local activePQR     = { 1, 0, 1 }
 
 -- Runtime state
 local scriptReady        = false
@@ -45,25 +40,36 @@ local function sessionTypeNow()
 end
 
 local function isPracticeNow()
-    return sessionTypeNow() == AC_PRACTICE
+    return sessionTypeNow() == ac.SessionType.Practice
 end
 
-local function activateForSession(s)
-    active = (s == AC_PRACTICE and activePQR[1] == 1)
-          or (s == AC_QUALIFY  and activePQR[2] == 1)
-          or (s == AC_RACE     and activePQR[3] == 1)
-    -- Unknown session type: default to active so the script doesn't silently vanish
-    if s ~= AC_PRACTICE and s ~= AC_QUALIFY and s ~= AC_RACE then
-        active = true
+local function activateForSession(sType)
+    if sType == ac.SessionType.Practice then
+        active = activePQR[1] == 1
+    elseif sType == ac.SessionType.Qualify then
+        active = activePQR[2] == 1
+    elseif sType == ac.SessionType.Race then
+        active = activePQR[3] == 1
+    else
+        active = true  -- unknown session: don't silently disable
     end
 end
 
+-- Find the car directly ahead using racePosition (lapCount is broken for other
+-- cars in online races — always 0 for car index > 0).
 local function updateGap()
     gapToAhead = 999.0
+    local myPos = car.racePosition
+    if myPos <= 1 then return end  -- P1 has nobody ahead
+
     for i = 1, sim.carsCount - 1 do
-        local gap = ac.getGapBetweenCars(0, i)
-        if gap > 0 and gap < gapToAhead then
-            gapToAhead = gap
+        local other = ac.getCar(i)
+        if other ~= nil and other.racePosition == myPos - 1 then
+            local gap = ac.getGapBetweenCars(0, i)
+            if gap > 0 then
+                gapToAhead = gap
+            end
+            break
         end
     end
 end
@@ -72,9 +78,8 @@ local function canActivate()
     local practice  = isPracticeNow()
     local gapOk     = practice or gapToAhead <= activationGap
     local sessionOk = practice or (maxPerSession == 0 or sessionActivations < maxPerSession)
-    return gapOk
-        and (maxPerLap == 0 or lapActivations < maxPerLap)
-        and sessionOk
+    local lapOk     = maxPerLap == 0 or lapActivations < maxPerLap
+    return gapOk and lapOk and sessionOk
 end
 
 local function deniedReason()
@@ -108,7 +113,7 @@ ac.onOnlineWelcome(function(message, config)
     maxPerSession = config:get("DTM_DRS", "MAX_PER_SESSION", 20)
     maxPerLap     = config:get("DTM_DRS", "MAX_PER_LAP",     2)
     activationGap = config:get("DTM_DRS", "ACTIVATION_GAP",  1.0)
-    activePQR[1]  = config:get("DTM_DRS", "ACTIVE_PQR", 0, 1)
+    activePQR[1]  = config:get("DTM_DRS", "ACTIVE_PQR", 1, 1)
     activePQR[2]  = config:get("DTM_DRS", "ACTIVE_PQR", 0, 2)
     activePQR[3]  = config:get("DTM_DRS", "ACTIVE_PQR", 1, 3)
     activateForSession(sessionTypeNow())
@@ -119,12 +124,12 @@ ac.onSessionStart(function(sessionIndex, restarted)
     sessionActivations = 0
     lapActivations     = 0
     drsOn              = false
-    -- Use the sessionIndex parameter directly — more reliable than sim.currentSessionIndex
     activateForSession(ac.getSession(sessionIndex).type)
 end)
 
 ac.onLapCompleted(0, function()
     lapActivations = 0
+    -- drsOn is intentionally NOT reset — carry-over activation is allowed
 end)
 
 -- ── update ────────────────────────────────────────────────────────────────────
