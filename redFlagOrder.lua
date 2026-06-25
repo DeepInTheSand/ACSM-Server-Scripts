@@ -59,7 +59,7 @@ ac.onOnlineWelcome(function(message, config)
 
             for i = 0, sim.carsCount - 1 do
                 local car = ac.getCar(i)
-                if car == nil or not car.isConnected then goto continue end
+                if car == nil or car:driverName() == "" then goto continue end
 
                 local spline = car.splinePosition
                 local lapCount = car.lapCount
@@ -109,7 +109,7 @@ function script.update(dt)
 
     for i = 0, sim.carsCount - 1 do
         local car = ac.getCar(i)
-        if car == nil or not car.isConnected then goto continue end
+        if car == nil or car:driverName() == "" then goto continue end
         if crossingTime[i] == nil then initCar(i) end
 
         local spline = car.splinePosition
