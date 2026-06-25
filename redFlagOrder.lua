@@ -1,6 +1,6 @@
--- redFlagOrder.lua v2.0
--- Admin button broadcasts red flag order via ac.OnlineEvent (same pattern as startLights).
--- All clients receive it and display it as a drawUI overlay. No chat flood issues.
+-- redFlagOrder.lua v2.1
+-- Broadcasts one OnlineEvent per car (seq=position). Each event is ~112 bytes,
+-- well within the 175-byte struct limit. Clients reassemble and render as drawUI overlay.
 --
 -- Optional server config ([REDFLAGORDER] section):
 --   ADMIN_ONLY = 1   (1 = admin only, 0 = all players; default 1)
@@ -20,20 +20,45 @@ local function initCar(id)
 end
 for id = 0, 199 do initCar(id) end
 
--- Display state (populated when OnlineEvent is received).
+-- Display state
 local orderLines = nil
 local displayTimer = 0
 
--- Broadcast order to all clients; each client renders it locally.
-local broadcastOrder = ac.OnlineEvent({
-    key = ac.StructItem.key("Red Flag Order"),
-    data = ac.StructItem.string(2048)
+-- Assembly buffer (populated as per-car events arrive)
+local pending = nil
+local pendingTotal = 0
+local pendingCount = 0
+
+-- One event per car. Struct size: 8(key)+1+1+1+1+100 = 112 bytes < 175-byte limit.
+local rfOrder = ac.OnlineEvent({
+    key    = ac.StructItem.key("Red Flag Order"),
+    seq    = ac.StructItem.uint8(),   -- position (1-based)
+    total  = ac.StructItem.uint8(),   -- total cars in order
+    lap    = ac.StructItem.uint8(),   -- car.lapCount
+    sector = ac.StructItem.uint8(),   -- car.currentSector
+    name   = ac.StructItem.string(100)
 }, function(sender, msg)
-    orderLines = {}
-    for line in msg.data:gmatch("[^\n]+") do
-        table.insert(orderLines, line)
+    if msg.seq == 1 then
+        pending = {}
+        pendingTotal = msg.total
+        pendingCount = 0
     end
-    displayTimer = 60
+
+    if pending == nil then return end
+
+    pendingCount = pendingCount + 1
+    pending[msg.seq] = "P" .. msg.seq .. "  " .. tostring(msg.name) ..
+        "  Lap " .. (msg.lap + 1) .. " S" .. (msg.sector + 1)
+
+    if pendingCount >= pendingTotal then
+        orderLines = {"=== RED FLAG ORDER  " .. pendingTotal .. " cars ==="}
+        for i = 1, pendingTotal do
+            table.insert(orderLines, pending[i] or ("P" .. i .. "  ???"))
+        end
+        table.insert(orderLines, "(press button again to close)")
+        displayTimer = 60
+        pending = nil
+    end
 end, ac.SharedNamespace.ServerScript)
 
 ac.onOnlineWelcome(function(message, config)
@@ -45,6 +70,12 @@ ac.onOnlineWelcome(function(message, config)
 
     ui.registerOnlineExtra(ui.Icons.Flag, "Red Flag Order", function() return true end, nil,
         function(okClicked)
+            -- Toggle: press again to close.
+            if orderLines then
+                orderLines = nil
+                return
+            end
+
             local entries = {}
 
             for _, car in ac.iterateCars.serverSlots() do
@@ -57,48 +88,51 @@ ac.onOnlineWelcome(function(message, config)
                 local pitLabel = car.isInPitlane and " (PIT)" or ""
 
                 table.insert(entries, {
-                    score = lap * 1000 + sector,
-                    time = t,
+                    score  = lap * 1000 + sector,
+                    time   = t,
                     spline = car.splinePosition,
-                    lap = lap,
+                    lap    = lap,
                     sector = sector,
-                    name = tostring(car:driverName()) .. pitLabel
+                    name   = tostring(car:driverName()) .. pitLabel
                 })
 
                 ::continue::
             end
 
+            if #entries == 0 then
+                ac.setMessage("Red Flag Order", "No active cars found.")
+                return
+            end
+
             table.sort(entries, function(a, b)
                 if a.score ~= b.score then return a.score > b.score end
-                if a.time ~= b.time then return a.time < b.time end
+                if a.time  ~= b.time  then return a.time  < b.time  end
                 return a.spline > b.spline
             end)
 
-            local lines = {"=== RED FLAG ORDER  " .. #entries .. " cars ==="}
             for pos, e in ipairs(entries) do
-                table.insert(lines, "P" .. pos .. "  " .. e.name ..
-                    "  Lap " .. (e.lap + 1) .. " S" .. (e.sector + 1))
+                rfOrder({
+                    seq    = pos,
+                    total  = #entries,
+                    lap    = e.lap,
+                    sector = e.sector,
+                    name   = e.name
+                })
             end
-            table.insert(lines, "(click button again to close)")
 
-            local packed = table.concat(lines, "\n")
-            broadcastOrder({data = packed})
-
-            ac.setMessage("Red Flag Order", #entries .. " cars. Order shown to all drivers.")
-            ac.log("Red Flag Order broadcast: " .. #entries .. " cars.")
+            ac.setMessage("Red Flag Order", #entries .. " cars. Order sent to all drivers.")
+            ac.log("Red Flag Order: " .. #entries .. " cars broadcast.")
         end, adminFlag)
 end)
 
-ac.debug("!version", "redFlagOrder v2.0")
+ac.debug("!version", "redFlagOrder v2.1")
 
 local updateTimer = 0
 
 function script.update(dt)
     if orderLines then
         displayTimer = displayTimer - dt
-        if displayTimer <= 0 then
-            orderLines = nil
-        end
+        if displayTimer <= 0 then orderLines = nil end
     end
 
     updateTimer = updateTimer - dt
@@ -112,10 +146,10 @@ function script.update(dt)
         if crossingTime[id] == nil then initCar(id) end
 
         local sector = car.currentSector
-        local lap = car.lapCount
+        local lap    = car.lapCount
 
         if trackLap[id] == -1 then
-            trackLap[id] = lap
+            trackLap[id]   = lap
             trackSector[id] = sector
             if sector == 0 then
                 crossingTime[id][0] = sim.currentSessionTime
@@ -126,7 +160,7 @@ function script.update(dt)
         if lap ~= trackLap[id] then
             crossingTime[id] = {}
             crossingTime[id][0] = sim.currentSessionTime
-            trackLap[id] = lap
+            trackLap[id]   = lap
             trackSector[id] = 0
         elseif sector > trackSector[id] then
             for s = trackSector[id] + 1, sector do
@@ -143,8 +177,8 @@ function script.drawUI()
     if not orderLines then return end
 
     local lineH = 18
-    local w = 400
-    local h = #orderLines * lineH + 40
+    local w = 420
+    local h = #orderLines * lineH + 44
 
     ui.beginTransparentWindow("rfOrder", vec2(20, 80), vec2(w, h), true)
     ui.pushDWriteFont("Consolas")
@@ -161,9 +195,7 @@ function script.drawUI()
 
     ui.popDWriteFont()
 
-    if ui.button("Close") then
-        orderLines = nil
-    end
+    if ui.button("Close") then orderLines = nil end
 
     ui.endTransparentWindow()
 end
