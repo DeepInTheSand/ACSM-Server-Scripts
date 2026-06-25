@@ -60,23 +60,35 @@ ac.onOnlineWelcome(function(message, config)
                 return a.spline > b.spline
             end)
 
-            ac.sendChatMessage("=== RED FLAG ORDER (" .. #entries .. " cars) ===")
+            messageQueue = {}
+            table.insert(messageQueue, "=== RED FLAG ORDER (" .. #entries .. " cars) ===")
             for pos, e in ipairs(entries) do
-                ac.sendChatMessage(string.format("P%d | %s | Lap %d S%d",
-                    pos, e.name, e.lap + 1, e.sector + 1))
+                table.insert(messageQueue, "P" .. pos .. " | " .. e.name ..
+                    " | Lap " .. (e.lap + 1) .. " S" .. (e.sector + 1))
             end
-            ac.sendChatMessage("=== END OF ORDER ===")
+            table.insert(messageQueue, "=== END OF ORDER ===")
 
             ac.setMessage("Red Flag Order", "Order posted to chat.")
             ac.log("Red Flag Order: " .. #entries .. " cars.")
         end, adminFlag)
 end)
 
-ac.debug("!version", "redFlagOrder v1.2")
+ac.debug("!version", "redFlagOrder v1.3")
 
 local updateTimer = 0
+local messageQueue = {}
+local messageTimer = 0
 
 function script.update(dt)
+    -- Drain message queue at ~1 message per 0.5s to avoid AC chat flood filter.
+    if #messageQueue > 0 then
+        messageTimer = messageTimer - dt
+        if messageTimer <= 0 then
+            ac.sendChatMessage(table.remove(messageQueue, 1))
+            messageTimer = 0.5
+        end
+    end
+
     updateTimer = updateTimer - dt
     if updateTimer > 0 then return end
     updateTimer = 1.0
