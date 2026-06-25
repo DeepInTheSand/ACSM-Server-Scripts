@@ -1,6 +1,6 @@
--- redFlagOrder.lua
--- Admin button to display race order at the last timing line each driver crossed.
--- Used for red flag procedures. Supports variable sector counts.
+-- redFlagOrder.lua v2.0
+-- Admin button broadcasts red flag order via ac.OnlineEvent (same pattern as startLights).
+-- All clients receive it and display it as a drawUI overlay. No chat flood issues.
 --
 -- Optional server config ([REDFLAGORDER] section):
 --   ADMIN_ONLY = 1   (1 = admin only, 0 = all players; default 1)
@@ -8,19 +8,33 @@
 local sim = ac.getSim()
 local adminFlag = ui.OnlineExtraFlags.Admin
 
--- Per-car sector crossing data, keyed by car.sessionID (stable online index).
--- crossingTime[sessionID][sectorIdx] = sim.currentSessionTime when that sector line was crossed this lap.
+-- Sector crossing data, keyed by car.sessionID.
 local crossingTime = {}
-local trackSector = {}  -- last known car.currentSector per sessionID
-local trackLap = {}     -- last known car.lapCount per sessionID
+local trackSector = {}
+local trackLap = {}
 
 local function initCar(id)
     crossingTime[id] = {}
-    trackSector[id] = -1  -- -1 = not yet observed this session
+    trackSector[id] = -1
     trackLap[id] = -1
 end
-
 for id = 0, 199 do initCar(id) end
+
+-- Display state (populated when OnlineEvent is received).
+local orderLines = nil
+local displayTimer = 0
+
+-- Broadcast order to all clients; each client renders it locally.
+local broadcastOrder = ac.OnlineEvent({
+    key = ac.StructItem.key("Red Flag Order"),
+    data = ac.StructItem.string(2048)
+}, function(sender, msg)
+    orderLines = {}
+    for line in msg.data:gmatch("[^\n]+") do
+        table.insert(orderLines, line)
+    end
+    displayTimer = 60
+end, ac.SharedNamespace.ServerScript)
 
 ac.onOnlineWelcome(function(message, config)
     if config:get("REDFLAGORDER", "ADMIN_ONLY", 1) == 1 then
@@ -43,9 +57,9 @@ ac.onOnlineWelcome(function(message, config)
                 local pitLabel = car.isInPitlane and " (PIT)" or ""
 
                 table.insert(entries, {
-                    score = lap * 1000 + sector,  -- higher = further ahead in race
-                    time = t,                      -- lower = reached this line first = was ahead
-                    spline = car.splinePosition,   -- fallback tiebreaker
+                    score = lap * 1000 + sector,
+                    time = t,
+                    spline = car.splinePosition,
                     lap = lap,
                     sector = sector,
                     name = tostring(car:driverName()) .. pitLabel
@@ -60,32 +74,30 @@ ac.onOnlineWelcome(function(message, config)
                 return a.spline > b.spline
             end)
 
-            messageQueue = {}
-            table.insert(messageQueue, "=== RED FLAG ORDER (" .. #entries .. " cars) ===")
+            local lines = {"=== RED FLAG ORDER  " .. #entries .. " cars ==="}
             for pos, e in ipairs(entries) do
-                table.insert(messageQueue, "P" .. pos .. " | " .. e.name ..
-                    " | Lap " .. (e.lap + 1) .. " S" .. (e.sector + 1))
+                table.insert(lines, "P" .. pos .. "  " .. e.name ..
+                    "  Lap " .. (e.lap + 1) .. " S" .. (e.sector + 1))
             end
-            table.insert(messageQueue, "=== END OF ORDER ===")
+            table.insert(lines, "(click button again to close)")
 
-            ac.setMessage("Red Flag Order", "Order posted to chat.")
-            ac.log("Red Flag Order: " .. #entries .. " cars.")
+            local packed = table.concat(lines, "\n")
+            broadcastOrder({data = packed})
+
+            ac.setMessage("Red Flag Order", #entries .. " cars. Order shown to all drivers.")
+            ac.log("Red Flag Order broadcast: " .. #entries .. " cars.")
         end, adminFlag)
 end)
 
-ac.debug("!version", "redFlagOrder v1.3")
+ac.debug("!version", "redFlagOrder v2.0")
 
 local updateTimer = 0
-local messageQueue = {}
-local messageTimer = 0
 
 function script.update(dt)
-    -- Drain message queue at ~1 message per 0.5s to avoid AC chat flood filter.
-    if #messageQueue > 0 then
-        messageTimer = messageTimer - dt
-        if messageTimer <= 0 then
-            ac.sendChatMessage(table.remove(messageQueue, 1))
-            messageTimer = 0.5
+    if orderLines then
+        displayTimer = displayTimer - dt
+        if displayTimer <= 0 then
+            orderLines = nil
         end
     end
 
@@ -103,7 +115,6 @@ function script.update(dt)
         local lap = car.lapCount
 
         if trackLap[id] == -1 then
-            -- First observation: record without inventing a false crossing time.
             trackLap[id] = lap
             trackSector[id] = sector
             if sector == 0 then
@@ -113,13 +124,11 @@ function script.update(dt)
         end
 
         if lap ~= trackLap[id] then
-            -- Crossed S/F line — new lap
             crossingTime[id] = {}
             crossingTime[id][0] = sim.currentSessionTime
             trackLap[id] = lap
             trackSector[id] = 0
         elseif sector > trackSector[id] then
-            -- Crossed one or more sector timing lines within the lap
             for s = trackSector[id] + 1, sector do
                 crossingTime[id][s] = sim.currentSessionTime
             end
@@ -128,4 +137,33 @@ function script.update(dt)
 
         ::continue::
     end
+end
+
+function script.drawUI()
+    if not orderLines then return end
+
+    local lineH = 18
+    local w = 400
+    local h = #orderLines * lineH + 40
+
+    ui.beginTransparentWindow("rfOrder", vec2(20, 80), vec2(w, h), true)
+    ui.pushDWriteFont("Consolas")
+
+    for i, line in ipairs(orderLines) do
+        if i == 1 then
+            ui.pushStyleColor(ui.StyleColor.Text, rgbm(1, 0.25, 0.25, 1))
+            ui.text(line)
+            ui.popStyleColor()
+        else
+            ui.text(line)
+        end
+    end
+
+    ui.popDWriteFont()
+
+    if ui.button("Close") then
+        orderLines = nil
+    end
+
+    ui.endTransparentWindow()
 end
